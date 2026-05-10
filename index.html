@@ -9,6 +9,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0A0A0A; }
@@ -18,26 +19,20 @@
   <div id="root"></div>
   <script type="text/babel" data-type="module">
 
-// ─── QR Code generator (pure JS, no library needed) ──────────────────────────
-// Uses the free QR Server API to render a QR image
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://ctmwlclswqldoxxhufkk.supabase.co";
+const SUPABASE_KEY = "sb_publishable_HJBQVLoEt6rnu45LAbfTWQ_YhtlNpip";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ─── QR Code ──────────────────────────────────────────────────────────────────
 function qrUrl(text, size = 200) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(text)}&bgcolor=0D0D0D&color=FF6B35&qzone=1&format=png`;
 }
 
-// ─── Data ────────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 const COLORS = ["#FF6B35","#FFD700","#9B5DE5","#00C49A","#FF3D6B","#00B4D8","#F77F00","#06D6A0"];
 const EMOJI_OPTIONS = ["🏃","🔥","⚡","🌙","🐅","🦅","💪","🎵","🚀","🌟","🏔️","⛰️","🌊","🦁","🐆","🎯","🏆","👟"];
 const WEEK_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
-
-const SEED_RUNNERS = [
-  { id: 1, name: "Sarah K.",  song: "Eye of the Tiger",       artist: "Survivor",          emoji: "🐅", color: "#FF6B35", approved: true },
-  { id: 2, name: "Marcus T.", song: "Can't Stop the Feeling", artist: "Justin Timberlake", emoji: "⚡", color: "#FFD700", approved: true },
-  { id: 3, name: "Priya L.",  song: "Running Up That Hill",   artist: "Kate Bush",         emoji: "🌙", color: "#9B5DE5", approved: true },
-];
-
-// The URL runners would scan to open the Submit page.
-// In a real deployment this would be your actual hosted URL.
-// For demo purposes we show the app's current page with a #submit hash.
 const APP_URL = "https://run-walkup-s9kx.vercel.app/#submit";
 
 function getWeekLabel() {
@@ -393,10 +388,11 @@ function AudioBar({ previewUrl, trackName, artist, color }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [view,setView]=useState("home");
-  const [runners,setRunners]=useState(SEED_RUNNERS);
+  const [runners,setRunners]=useState([]);
   const [pending,setPending]=useState([]);
   const [history,setHistory]=useState([]);
-  const [featured,setFeatured]=useState(()=>SEED_RUNNERS[0]);
+  const [featured,setFeatured]=useState(null);
+  const [loading,setLoading]=useState(true);
   const [confettiOn,setConfettiOn]=useState(false);
   const [showShare,setShowShare]=useState(false);
   const [showQR,setShowQR]=useState(false);
@@ -410,18 +406,51 @@ export default function App() {
   const [submitted,setSubmitted]=useState(false);
   const weekLabel=getWeekLabel();
 
-  function firePick(){
+  // ── Load all data from Supabase on mount ──
+  useEffect(()=>{
+    async function loadAll(){
+      setLoading(true);
+      const [{data:rData},{data:sData},{data:hData},{data:scData}] = await Promise.all([
+        sb.from("runners").select("*").eq("approved",true).order("created_at"),
+        sb.from("submissions").select("*").eq("approved",false).order("created_at"),
+        sb.from("history").select("*").order("picked_at"),
+        sb.from("schedule").select("*"),
+      ]);
+      const rs = (rData||[]).map(r=>({...r,previewUrl:r.preview_url}));
+      const ps = (sData||[]).map(r=>({...r,previewUrl:r.preview_url}));
+      const hs = (hData||[]).map(h=>({...h,date:new Date(h.picked_at).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}));
+      const sc = {};
+      (scData||[]).forEach(s=>{ sc[s.day]={id:s.runner_id,name:s.runner_name,song:s.song,emoji:s.emoji,color:s.color}; });
+      setRunners(rs);
+      setPending(ps);
+      setHistory(hs);
+      setScheduleMap(sc);
+      if(rs.length) setFeatured(rs[0]);
+      setLoading(false);
+    }
+    loadAll();
+  },[]);
+
+  async function firePick(){
     const pick=pickRunner(runners,history);
     if(!pick)return;
     setFeatured(pick);
-    setHistory(h=>[...h,{id:pick.id,name:pick.name,song:pick.song,artist:pick.artist,emoji:pick.emoji,date:new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}]);
+    const newH={id:pick.id,name:pick.name,song:pick.song,artist:pick.artist,emoji:pick.emoji,date:new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})};
+    setHistory(h=>[...h,newH]);
     setConfettiOn(true); setTimeout(()=>setConfettiOn(false),3200);
+    await sb.from("history").insert({runner_id:pick.id,runner_name:pick.name,song:pick.song,artist:pick.artist,emoji:pick.emoji});
   }
 
-  function saveRunner(){
+  async function saveRunner(){
     if(!form.name.trim()||!form.song.trim())return;
-    if(editTarget){setRunners(rs=>rs.map(r=>r.id===editTarget.id?{...r,...form,approved:true}:r));setEditTarget(null);}
-    else{setRunners(rs=>[...rs,{id:Date.now(),...form,approved:true}]);}
+    if(editTarget){
+      await sb.from("runners").update({name:form.name,song:form.song,artist:form.artist,emoji:form.emoji,color:form.color,preview_url:form.previewUrl}).eq("id",editTarget.id);
+      setRunners(rs=>rs.map(r=>r.id===editTarget.id?{...r,...form}:r));
+      setEditTarget(null);
+    } else {
+      const {data}=await sb.from("runners").insert({name:form.name,song:form.song,artist:form.artist,emoji:form.emoji,color:form.color,preview_url:form.previewUrl,approved:true}).select().single();
+      if(data) setRunners(rs=>[...rs,{...data,previewUrl:data.preview_url}]);
+    }
     setForm({name:"",song:"",artist:"",emoji:"🏃",color:COLORS[0],previewUrl:""});
     setShowAddForm(false);setShowSongSearch(false);
   }
@@ -432,15 +461,44 @@ export default function App() {
     setShowAddForm(true);setShowSongSearch(false);setView("roster");
   }
 
-  function deleteRunner(id){setRunners(rs=>rs.filter(r=>r.id!==id));if(featured?.id===id)setFeatured(null);}
-  function approvePending(p){setRunners(rs=>[...rs,{...p,id:Date.now(),approved:true}]);setPending(ps=>ps.filter(x=>x.id!==p.id));}
+  async function deleteRunner(id){
+    await sb.from("runners").delete().eq("id",id);
+    setRunners(rs=>rs.filter(r=>r.id!==id));
+    if(featured?.id===id)setFeatured(null);
+  }
 
-  function submitSong(){
+  async function approvePending(p){
+    const {data}=await sb.from("runners").insert({name:p.name,song:p.song,artist:p.artist,emoji:p.emoji,color:p.color,preview_url:p.previewUrl,approved:true}).select().single();
+    await sb.from("submissions").delete().eq("id",p.id);
+    if(data) setRunners(rs=>[...rs,{...data,previewUrl:data.preview_url}]);
+    setPending(ps=>ps.filter(x=>x.id!==p.id));
+  }
+
+  async function submitSong(){
     if(!subForm.name.trim()||!subForm.song.trim())return;
-    setPending(ps=>[...ps,{...subForm,id:Date.now()}]);
+    const {data}=await sb.from("submissions").insert({name:subForm.name,song:subForm.song,artist:subForm.artist,emoji:subForm.emoji,color:subForm.color,preview_url:subForm.previewUrl,approved:false}).select().single();
+    if(data) setPending(ps=>[...ps,{...data,previewUrl:data.preview_url}]);
     setSubForm({name:"",song:"",artist:"",emoji:"🏃",color:COLORS[0],previewUrl:""});
     setSubmitted(true);setTimeout(()=>setSubmitted(false),4000);
   }
+
+  async function assignSchedule(day,runner){
+    await sb.from("schedule").upsert({day,runner_id:runner.id,runner_name:runner.name,song:runner.song,emoji:runner.emoji,color:runner.color},{onConflict:"day"});
+    setScheduleMap(m=>({...m,[day]:runner}));
+  }
+
+  async function removeSchedule(day){
+    await sb.from("schedule").delete().eq("day",day);
+    setScheduleMap(m=>{const n={...m};delete n[day];return n;});
+  }
+
+  if(loading) return(
+    <div style={{minHeight:"100vh",background:"#0A0A0A",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+      <div style={{fontSize:48}}>🎵</div>
+      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,letterSpacing:6,color:"#FF6B35"}}>LOADING...</div>
+      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#444"}}>Connecting to database</div>
+    </div>
+  );
 
   const spotifyQ=featured?encodeURIComponent(`${featured.song} ${featured.artist}`):"";
 
@@ -689,8 +747,8 @@ export default function App() {
                       ):<span className="body" style={{color:"#2A2A2A",fontSize:13}}>Unassigned</span>}
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                      {a&&<button className="btn-ghost" style={{padding:"4px 9px",fontSize:11,borderColor:"#FF3D6B",color:"#FF3D6B"}} onClick={()=>setScheduleMap(m=>{const n={...m};delete n[day];return n;})}>✕</button>}
-                      <select className="input" style={{width:"auto",padding:"5px 10px",fontSize:12,background:"#0D0D0D"}} value="" onChange={e=>{const r=runners.find(x=>x.id===Number(e.target.value));if(r)setScheduleMap(m=>({...m,[day]:r}));}}>
+                      {a&&<button className="btn-ghost" style={{padding:"4px 9px",fontSize:11,borderColor:"#FF3D6B",color:"#FF3D6B"}} onClick={()=>removeSchedule(day)}>✕</button>}
+                      <select className="input" style={{width:"auto",padding:"5px 10px",fontSize:12,background:"#0D0D0D"}} value="" onChange={e=>{const r=runners.find(x=>x.id===Number(e.target.value));if(r)assignSchedule(day,r);}}>
                         <option value="">Assign…</option>
                         {runners.filter(r=>r.approved).map(r=><option key={r.id} value={r.id}>{r.emoji} {r.name}</option>)}
                       </select>
