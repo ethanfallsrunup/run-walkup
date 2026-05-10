@@ -38,9 +38,7 @@ const SEED_RUNNERS = [
 // The URL runners would scan to open the Submit page.
 // In a real deployment this would be your actual hosted URL.
 // For demo purposes we show the app's current page with a #submit hash.
-const APP_URL = typeof window !== "undefined"
-  ? window.location.href.split("?")[0].split("#")[0] + "#submit"
-  : "https://runwalkup.app/#submit";
+const APP_URL = "https://run-walkup-s9kx.vercel.app/#submit";
 
 function getWeekLabel() {
   const now = new Date();
